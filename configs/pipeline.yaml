@@ -1,0 +1,47 @@
+# 项目统一配置。组长维护本文件，其他同学新增参数时先和组长对齐字段名。
+paths:
+  raw_dir: data/raw
+  cleaned_metrics: data/cleaned/metrics_cleaned.csv
+  cleaned_business: data/cleaned/business_cleaned.csv
+  sample_small: data/sample/sample_small.csv
+  sample_medium: data/sample/sample_medium.csv
+  profiles_dir: results/profiles
+  anomalies_dir: results/anomalies
+  performance_dir: results/performance
+
+data_contract:
+  # 来自《训练数据说明.xlsx》的性能指标接口。
+  metrics_columns: [timestamp, cmdb_id, kpi_name, value]
+  # 业务指标黄金指标：rr 响应率、sr 成功率、count 交易量、mrt 平均响应时间。
+  business_columns: [timestamp, service, rr, sr, count, mrt]
+  timestamp_unit: sec
+  sampling_interval_sec: 60
+  series_key: [cmdb_id, kpi_name]
+
+baseline:
+  iqr_multiplier: 1.5
+  ksigma_k: 3.0
+  sliding_window: 60
+  range_rules:
+    default:
+      low:
+      high:
+    percent:
+      low: 0
+      high: 100
+
+cluster:
+  master: server-1
+  workers: [server-2, server-3]
+  shard_key: series_id
+
+hadoop:
+  # 成员 2 负责把这些路径和真实集群保持一致。
+  hdfs_base: /bigdatapj
+  hdfs_raw: /bigdatapj/raw
+  hdfs_cleaned: /bigdatapj/cleaned/metrics_cleaned.csv
+  hdfs_anomalies: /bigdatapj/results/anomalies
+  hdfs_profiles: /bigdatapj/results/profiles
+  streaming_jar: /usr/local/hadoop/share/hadoop/tools/lib/hadoop-streaming.jar
+  mapper: src/hadoop/mapper_baseline.py
+  reducer: src/hadoop/reducer_baseline.py
