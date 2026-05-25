@@ -58,6 +58,7 @@ timestamp, cmdb_id, kpi_name, value, method, is_anomaly, score, threshold_low, t
 详细分工、每个人需要修改的文件、交付物和验收标准见：
 
 - docs/组长交付说明.md
+- docs/分工任务清单.md
 - docs/环境部署.md
 - docs/使用说明.md
 - docs/项目文档.md
