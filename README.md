@@ -15,7 +15,7 @@
 
 ## 一键主流程
 
-```powershell
+```bash
 python -m src.preprocessing.clean_metrics --input data/raw --output data/cleaned/metrics_cleaned.csv
 python -m src.preprocessing.build_profiles --input data/cleaned/metrics_cleaned.csv
 python -m src.algorithms.baseline --input data/cleaned/metrics_cleaned.csv --method all
@@ -25,15 +25,15 @@ python -m src.algorithms.baseline --input data/cleaned/metrics_cleaned.csv --met
 
 集群上使用：
 
-```powershell
-.\scripts\run_all\run_pipeline.ps1 -InputPath data/raw/metrics_raw.csv -RunHadoop
+```bash
+bash scripts/run_all/run_pipeline.sh --input-path data/raw/metrics_raw.csv --run-hadoop
 ```
 
 Hadoop 相关文件：
 
 - `src/hadoop/mapper_baseline.py`
 - `src/hadoop/reducer_baseline.py`
-- `scripts/hadoop/run_streaming_iqr.ps1`
+- `scripts/hadoop/run_streaming_iqr.sh`
 
 ## 核心数据接口
 

@@ -4,7 +4,7 @@
 
 建议先实现一个最小导入流程：
 
-```powershell
+```bash
 python scripts/import_data/import_metrics.py --input <原始数据目录> --output data/raw/metrics_raw.csv
 ```
 
