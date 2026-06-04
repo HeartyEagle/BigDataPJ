@@ -53,6 +53,7 @@ cd "${REPO_ROOT}"
 
 python -m src.preprocessing.clean_metrics --input "${INPUT_PATH}" --output "${CLEANED_PATH}"
 python -m src.preprocessing.build_profiles --input "${CLEANED_PATH}"
+python -m src.preprocessing.make_samples --input "${CLEANED_PATH}"
 python -m src.algorithms.baseline --input "${CLEANED_PATH}" --method all
 
 if [[ "${RUN_HADOOP}" -eq 1 ]]; then
