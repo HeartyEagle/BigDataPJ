@@ -23,8 +23,8 @@ def _result_frame(df: pd.DataFrame, method: str, is_anomaly: pd.Series, score: p
     result["method"] = method
     result["is_anomaly"] = is_anomaly.astype(int)
     result["score"] = score
-    result["threshold_low"] = low
-    result["threshold_high"] = high
+    result["threshold_low"] = float(low)
+    result["threshold_high"] = float(high)
     return result.loc[:, ANOMALY_COLUMNS]
 
 
@@ -43,19 +43,71 @@ def detect_ksigma(group: pd.DataFrame, k: float = 3.0) -> pd.DataFrame:
     std = group["value"].std(ddof=0)
     low = mean - k * std
     high = mean + k * std
-    score = ((group["value"] - mean).abs() / std) if std else pd.Series(0.0, index=group.index)
+    if std and std != 0:
+        score = (group["value"] - mean).abs() / std
+    else:
+        score = pd.Series(0.0, index=group.index)
     return _result_frame(group, "K-Sigma", (group["value"] < low) | (group["value"] > high), score, low, high)
 
 
-def detect_range(group: pd.DataFrame) -> pd.DataFrame:
-    # 成员 4 可按 kpi_name 补充更细范围，例如 CPU/内存百分比为 0-100。
+def _range_thresholds(group: pd.DataFrame) -> tuple[float, float]:
     kpi_name = str(group["kpi_name"].iloc[0]).lower()
-    if "pct" in kpi_name or "percent" in kpi_name or "usage" in kpi_name:
-        low, high = 0.0, 100.0
-    else:
-        low, high = -np.inf, np.inf
+    value_min = group["value"].min()
+    if any(token in kpi_name for token in ["pct", "percent", "usage"]):
+        return 0.0, 100.0
+    if any(token in kpi_name for token in ["rate", "ratio", "sr", "rr", "success", "failure", "error"]):
+        return 0.0, np.inf
+    if any(token in kpi_name for token in ["cpu", "memory", "disk", "latency", "mrt", "time", "delay"]):
+        return 0.0, np.inf
+    if value_min >= 0:
+        return 0.0, np.inf
+    return -np.inf, np.inf
+
+
+def detect_range(group: pd.DataFrame) -> pd.DataFrame:
+    low, high = _range_thresholds(group)
     score = np.maximum(low - group["value"], group["value"] - high).clip(lower=0)
     return _result_frame(group, "Range", (group["value"] < low) | (group["value"] > high), score, low, high)
+
+
+def summarize_baseline(outputs: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for method, frame in outputs.items():
+        total = len(frame)
+        anomalies = int(frame["is_anomaly"].sum()) if not frame.empty else 0
+        series_count = int(frame.drop_duplicates(SERIES_KEY).shape[0]) if not frame.empty else 0
+        rows.append(
+            {
+                "method": method,
+                "series_count": series_count,
+                "record_count": total,
+                "anomaly_count": anomalies,
+                "anomaly_rate": anomalies / total if total else 0.0,
+            }
+        )
+    return pd.DataFrame(rows, columns=["method", "series_count", "record_count", "anomaly_count", "anomaly_rate"])
+
+
+def select_demo_cases(outputs: dict[str, pd.DataFrame], top_n: int = 5) -> pd.DataFrame:
+    candidates: list[pd.DataFrame] = []
+    for method, frame in outputs.items():
+        if frame.empty:
+            continue
+        anomalies = frame.loc[frame["is_anomaly"] > 0, ["cmdb_id", "kpi_name", "method", "score"]].copy()
+        if anomalies.empty:
+            continue
+        anomalies["method"] = method
+        candidates.append(anomalies)
+    if not candidates:
+        return pd.DataFrame(columns=["cmdb_id", "kpi_name", "method", "anomaly_count", "max_score"])
+
+    summary = (
+        pd.concat(candidates, ignore_index=True)
+        .groupby(["cmdb_id", "kpi_name", "method"], as_index=False)
+        .agg(anomaly_count=("score", "count"), max_score=("score", "max"))
+    )
+    summary = summary.sort_values(["anomaly_count", "max_score"], ascending=[False, False])
+    return summary.head(top_n).reset_index(drop=True)
 
 
 def run_baseline(df: pd.DataFrame, method: str = "all") -> dict[str, pd.DataFrame]:
@@ -88,6 +140,19 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs = run_baseline(read_table(args.input), args.method)
+
+    summary = summarize_baseline(outputs)
+    write_table(summary, output_dir / "baseline_summary.csv")
+    print("baseline_summary:", len(summary), "methods")
+
+    demo_cases = select_demo_cases(outputs, top_n=5)
+    if not demo_cases.empty:
+        write_table(demo_cases, output_dir / "demo_cases.csv")
+        print("demo_cases:", len(demo_cases), "series selected")
+    else:
+        write_table(demo_cases, output_dir / "demo_cases.csv")
+        print("demo_cases: no anomalies found, empty file written")
+
     for name, result in outputs.items():
         out = output_dir / f"anomaly_{name}.csv"
         write_table(result, out)

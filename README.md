@@ -21,6 +21,16 @@ python -m src.preprocessing.build_profiles --input data/cleaned/metrics_cleaned.
 python -m src.algorithms.baseline --input data/cleaned/metrics_cleaned.csv --method all
 ```
 
+Baseline 脚本会生成：
+
+```text
+results/anomalies/anomaly_iqr.csv
+results/anomalies/anomaly_ksigma.csv
+results/anomalies/anomaly_range.csv
+results/anomalies/baseline_summary.csv
+results/anomalies/demo_cases.csv
+```
+
 ## Hadoop 主流程
 
 集群上使用：
