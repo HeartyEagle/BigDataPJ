@@ -16,7 +16,11 @@ def read_table(path: str | Path) -> pd.DataFrame:
 
     path = Path(path)
     if path.is_dir():
-        frames = [read_table(child) for child in sorted(path.glob("*")) if child.suffix in {".csv", ".parquet"}]
+        frames = [
+            read_table(child)
+            for child in sorted(path.rglob("*"))
+            if child.is_file() and child.suffix in {".csv", ".parquet"}
+        ]
         if not frames:
             raise FileNotFoundError(f"No csv/parquet files found in {path}")
         return pd.concat(frames, ignore_index=True)
