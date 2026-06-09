@@ -38,8 +38,8 @@ cluster:
 hadoop:
   # 成员 2 负责把这些路径和真实集群保持一致。
   hdfs_base: /bigdatapj
-  hdfs_raw: /bigdatapj/raw
-  hdfs_cleaned: /bigdatapj/cleaned/metrics_cleaned.csv
+  hdfs_raw: /bigdatapj/data/raw
+  hdfs_cleaned: /bigdatapj/data/cleaned/metrics_cleaned.csv
   hdfs_anomalies: /bigdatapj/results/anomalies
   hdfs_profiles: /bigdatapj/results/profiles
   streaming_jar: /usr/local/hadoop/share/hadoop/tools/lib/hadoop-streaming.jar

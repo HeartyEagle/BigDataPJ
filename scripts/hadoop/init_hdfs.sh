@@ -33,8 +33,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-hdfs dfs -mkdir -p "${BASE}/raw"
-hdfs dfs -mkdir -p "${BASE}/cleaned"
+hdfs dfs -mkdir -p "${BASE}/data/raw"
+hdfs dfs -mkdir -p "${BASE}/data/cleaned"
 hdfs dfs -mkdir -p "${BASE}/results/profiles"
 hdfs dfs -mkdir -p "${BASE}/results/anomalies"
 hdfs dfs -mkdir -p "${BASE}/results/performance"

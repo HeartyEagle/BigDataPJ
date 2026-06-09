@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INPUT="/bigdatapj/cleaned/metrics_cleaned.csv"
+INPUT="/bigdatapj/data/cleaned/metrics_cleaned.csv"
 OUTPUT="/bigdatapj/results/anomalies/hadoop_iqr"
 STREAMING_JAR="/usr/local/hadoop/share/hadoop/tools/lib/hadoop-streaming.jar"
 
@@ -12,7 +12,7 @@ Usage: scripts/hadoop/run_streaming_iqr.sh [options]
 Run the Hadoop Streaming IQR anomaly detection job.
 
 Options:
-  --input PATH           HDFS input CSV. Default: /bigdatapj/cleaned/metrics_cleaned.csv
+  --input PATH           HDFS input CSV. Default: /bigdatapj/data/cleaned/metrics_cleaned.csv
   --output PATH          HDFS output directory. Default: /bigdatapj/results/anomalies/hadoop_iqr
   --streaming-jar PATH   Hadoop streaming jar path. Default: /usr/local/hadoop/share/hadoop/tools/lib/hadoop-streaming.jar
   -h, --help             Show this help.
