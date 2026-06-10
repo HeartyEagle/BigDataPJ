@@ -72,8 +72,8 @@ else
     -D mapreduce.job.reduces="${NUM_REDUCERS}" \
     -D mapreduce.input.fileinputformat.input.dir.recursive=true \
     -files src/hadoop/mapper_clean.py,src/hadoop/reducer_clean.py \
-    -mapper  "python3 mapper_clean.py" \
-    -reducer "python3 reducer_clean.py" \
+    -mapper  "/opt/miniconda3/bin/python3 mapper_clean.py" \
+    -reducer "/opt/miniconda3/bin/python3 reducer_clean.py" \
     -input   "${HDFS_RAW}" \
     -output  "${HDFS_CLEAN_OUT}"
 
@@ -90,8 +90,8 @@ hadoop jar "${STREAMING_JAR}" \
   -D mapreduce.job.name="Member3-Profile" \
   -D mapreduce.job.reduces="${NUM_REDUCERS}" \
   -files src/hadoop/mapper_profile.py,src/hadoop/reducer_profile.py \
-  -mapper  "python3 mapper_profile.py" \
-  -reducer "python3 reducer_profile.py" \
+  -mapper  "/opt/miniconda3/bin/python3 mapper_profile.py" \
+  -reducer "/opt/miniconda3/bin/python3 reducer_profile.py" \
   -input   "${HDFS_CLEAN_INPUT}" \
   -output  "${HDFS_PROFILE_OUT}"
 

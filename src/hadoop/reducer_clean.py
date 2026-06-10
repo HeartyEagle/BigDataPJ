@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/opt/miniconda3/bin/python3
 """Hadoop Streaming reducer — 成员 3 数据清洗阶段。
 
 输入：mapper_clean.py 的输出，Hadoop 已按 key 排序。
@@ -23,8 +23,8 @@ def main() -> None:
     current_key: str | None = None
     points: dict[int, float] = {}
 
-    for line in sys.stdin:
-        line = line.rstrip("\n")
+    for raw in sys.stdin.buffer:
+        line = raw.decode("utf-8", errors="replace").rstrip("\n")
         if not line or "\t" not in line:
             continue
         key, val = line.split("\t", 1)

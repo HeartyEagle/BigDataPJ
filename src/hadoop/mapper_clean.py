@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/opt/miniconda3/bin/python3
 """Hadoop Streaming mapper — 成员 3 数据清洗阶段。
 
 输入：HDFS 上的原始 CSV 行（格式 timestamp,cmdb_id,kpi_name,value）
@@ -14,7 +14,8 @@ import sys
 
 
 def main() -> None:
-    for line in sys.stdin:
+    for line in sys.stdin.buffer:
+        line = line.decode("utf-8", errors="replace")
         line = line.strip()
         if not line or line.startswith("timestamp,"):
             continue
