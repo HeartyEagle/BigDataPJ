@@ -36,12 +36,21 @@ cluster:
   shard_key: series_id
 
 hadoop:
-  # 成员 2 负责把这些路径和真实集群保持一致。
   hdfs_base: /bigdatapj
-  hdfs_raw: /bigdatapj/raw
-  hdfs_cleaned: /bigdatapj/cleaned/metrics_cleaned.csv
-  hdfs_anomalies: /bigdatapj/results/anomalies
+  # 实际服务器路径（10.176.62.221，HADOOP_HOME=/opt/hadoop）
+  hdfs_raw: /bigdatapj/timeseries/raw/metric
+  hdfs_cleaned_existing: /bigdatapj/timeseries/preprocess/cleaned_job/cleaned
+  hdfs_cleaned_member3: /bigdatapj/timeseries/preprocess/member3_cleaned
+  hdfs_profiles_member3: /bigdatapj/timeseries/preprocess/member3_profiles
+  hdfs_anomalies: /bigdatapj/timeseries/anomaly
   hdfs_profiles: /bigdatapj/results/profiles
-  streaming_jar: /usr/local/hadoop/share/hadoop/tools/lib/hadoop-streaming.jar
-  mapper: src/hadoop/mapper_baseline.py
-  reducer: src/hadoop/reducer_baseline.py
+  # streaming jar 由 run_member3.sh 自动探测，也可手动指定
+  streaming_jar: /opt/module/hadoop/share/hadoop/tools/lib/hadoop-streaming-3.2.4.jar
+  # 成员 3 预处理
+  mapper_clean: src/hadoop/mapper_clean.py
+  reducer_clean: src/hadoop/reducer_clean.py
+  mapper_profile: src/hadoop/mapper_profile.py
+  reducer_profile: src/hadoop/reducer_profile.py
+  # 成员 4/5 baseline 异常检测
+  mapper_baseline: src/hadoop/mapper_baseline.py
+  reducer_baseline: src/hadoop/reducer_baseline.py
