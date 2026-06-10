@@ -70,6 +70,7 @@ else
   hadoop jar "${STREAMING_JAR}" \
     -D mapreduce.job.name="Member3-Clean" \
     -D mapreduce.job.reduces="${NUM_REDUCERS}" \
+    -D mapreduce.input.fileinputformat.input.dir.recursive=true \
     -files src/hadoop/mapper_clean.py,src/hadoop/reducer_clean.py \
     -mapper  "python3 mapper_clean.py" \
     -reducer "python3 reducer_clean.py" \
