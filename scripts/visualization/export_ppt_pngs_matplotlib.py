@@ -94,6 +94,26 @@ def bar_horizontal(
     return save(fig, output_dir, stem)
 
 
+def balanced_topn_by_method(df: pd.DataFrame, value: str, total: int = 20) -> pd.DataFrame:
+    if df.empty or "method" not in df.columns:
+        return df.sort_values(value, ascending=False).head(total)
+    plot = df.copy()
+    plot[value] = pd.to_numeric(plot[value], errors="coerce")
+    plot = plot.dropna(subset=[value])
+    plot = plot.loc[plot[value] > 0]
+    if plot.empty:
+        return plot
+    method_count = max(1, plot["method"].nunique())
+    per_method = max(1, total // method_count)
+    balanced = (
+        plot.sort_values(["method", value], ascending=[True, False])
+        .groupby("method", group_keys=False)
+        .head(per_method)
+        .sort_values(value, ascending=False)
+    )
+    return balanced.head(total)
+
+
 def export_profile_figures(root: Path, output_dir: Path) -> list[Path]:
     profiles = root / "results" / "profiles"
     exported: list[Path] = []
@@ -155,14 +175,21 @@ def export_anomaly_figures(root: Path, output_dir: Path) -> list[Path]:
 
     series = read_csv(package / "anomaly_series_topn.csv")
     if not series.empty and has_columns(series, ["method", "cmdb_id", "kpi_name", "anomaly_points"]):
-        series_counts = series.groupby("method", as_index=False).size().rename(columns={"size": "top_anomaly_series"})
+        if "anomaly_series" in summary.columns:
+            series_counts = summary[["method", "anomaly_series"]].copy()
+            series_count_column = "anomaly_series"
+            series_count_title = "Anomaly Series by Algorithm"
+        else:
+            series_counts = series.groupby("method", as_index=False).size().rename(columns={"size": "top_anomaly_series"})
+            series_count_column = "top_anomaly_series"
+            series_count_title = "Top-N Anomaly Series by Algorithm"
         if not series_counts.empty:
             exported.append(
                 bar_vertical(
                     series_counts,
                     "method",
-                    "top_anomaly_series",
-                    "Top-N Anomaly Series by Algorithm",
+                    series_count_column,
+                    series_count_title,
                     "Algorithm",
                     "Series Count",
                     output_dir,
@@ -170,10 +197,10 @@ def export_anomaly_figures(root: Path, output_dir: Path) -> list[Path]:
                 )
             )
 
-        plot = series.sort_values("anomaly_points", ascending=False).head(20).copy()
+        plot = balanced_topn_by_method(series, "anomaly_points", total=20).copy()
         plot["label"] = plot["method"].astype(str) + " | " + plot["cmdb_id"].astype(str) + " | " + plot["kpi_name"].astype(str)
         exported.append(
-            bar_horizontal(plot, "label", "anomaly_points", "Top 20 Anomaly Series", "Anomaly Points", "Method | Series", output_dir, "anomaly_series_top20")
+            bar_horizontal(plot, "label", "anomaly_points", "Top Anomaly Series by Algorithm", "Anomaly Points", "Method | Series", output_dir, "anomaly_series_top20")
         )
 
     kpi = read_csv(package / "anomaly_kpi_topn.csv")
