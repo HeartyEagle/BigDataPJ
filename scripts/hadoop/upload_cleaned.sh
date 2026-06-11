@@ -2,17 +2,17 @@
 set -euo pipefail
 
 LOCAL_CLEANED="data/cleaned/metrics_cleaned.csv"
-HDFS_CLEANED="/bigdatapj/data/cleaned/metrics_cleaned.csv"
+HDFS_CLEANED="/bigdatapj/data/cleaned_local/metrics_cleaned.csv"
 
 usage() {
   cat <<'USAGE'
 Usage: scripts/hadoop/upload_cleaned.sh [options]
 
-Upload the cleaned metrics CSV to HDFS for Hadoop Streaming.
+Upload a local cleaned metrics CSV to HDFS for Hadoop Streaming.
 
 Options:
   --local-cleaned PATH   Local cleaned CSV. Default: data/cleaned/metrics_cleaned.csv
-  --hdfs-cleaned PATH    HDFS destination CSV. Default: /bigdatapj/data/cleaned/metrics_cleaned.csv
+  --hdfs-cleaned PATH    HDFS destination CSV. Default: /bigdatapj/data/cleaned_local/metrics_cleaned.csv
   -h, --help             Show this help.
 USAGE
 }
