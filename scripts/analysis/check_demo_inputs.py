@@ -145,6 +145,8 @@ def build_checks(root: Path, include_optional_as_required: bool) -> list[CheckRe
     profiles = root / "results" / "profiles"
     anomalies = root / "results" / "anomalies"
     performance = root / "results" / "performance"
+    advanced_dir = anomalies / "local_advanced_full"
+    advanced_base = advanced_dir if advanced_dir.exists() else anomalies
 
     optional_required = include_optional_as_required
     checks = [
@@ -158,9 +160,10 @@ def build_checks(root: Path, include_optional_as_required: bool) -> list[CheckRe
         check_csv(anomalies / "anomaly_range.csv", ANOMALY_COLUMNS, "Range anomalies", True, root),
         check_hadoop_parts(anomalies / "hadoop_iqr", optional_required, root),
         check_csv(performance / "performance_report.csv", PERFORMANCE_COLUMNS, "Performance report", optional_required, root),
-        check_csv(anomalies / "anomaly_advanced.csv", ANOMALY_COLUMNS, "Advanced anomalies", optional_required, root),
-        check_csv(anomalies / "anomaly_events.csv", ANOMALY_EVENT_COLUMNS, "Anomaly events", optional_required, root),
+        check_csv(advanced_base / "anomaly_advanced.csv", ANOMALY_COLUMNS, "Advanced anomalies", optional_required, root),
+        check_csv(advanced_base / "advanced_summary.csv", ["method", "series_count", "record_count", "anomaly_count", "anomaly_rate"], "Advanced summary", optional_required, root),
         check_csv(anomalies / "demo_cases.csv", DEMO_CASE_COLUMNS, "Demo cases", optional_required, root),
+        check_csv(advanced_base / "demo_cases.csv", DEMO_CASE_COLUMNS, "Advanced demo cases", optional_required, root),
     ]
     return checks
 
