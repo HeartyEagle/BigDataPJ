@@ -29,12 +29,13 @@ def main() -> None:
             timestamp = timestamp.strip()
             cmdb_id = cmdb_id.strip()
             kpi_name = kpi_name.strip()
-            value = float(value_text)
+            value_text = value_text.strip()
+            float(value_text)
         except ValueError:
             continue
 
         key = f"{cmdb_id}|{kpi_name}"
-        print(f"{key}\t{timestamp},{value}")
+        print(f"{key}\t{timestamp},{value_text}")
 
 
 if __name__ == "__main__":

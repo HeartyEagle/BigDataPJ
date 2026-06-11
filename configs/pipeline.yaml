@@ -30,6 +30,13 @@ baseline:
       low: 0
       high: 100
 
+advanced:
+  method: rolling_robust_zscore
+  window: 60
+  min_periods: 30
+  z_threshold: 3.5
+  max_event_gap_sec: 120
+
 cluster:
   master: server-1
   workers: [server-2, server-3]
@@ -39,9 +46,10 @@ hadoop:
   # 成员 2 负责把这些路径和真实集群保持一致。
   hdfs_base: /bigdatapj
   hdfs_raw: /bigdatapj/data/raw
-  hdfs_cleaned: /bigdatapj/data/cleaned/metrics_cleaned.csv
+  hdfs_cleaned: /bigdatapj/data/cleaned
   hdfs_anomalies: /bigdatapj/results/anomalies
   hdfs_profiles: /bigdatapj/results/profiles
-  streaming_jar: /usr/local/hadoop/share/hadoop/tools/lib/hadoop-streaming.jar
+  streaming_jar: /opt/hadoop/share/hadoop/tools/lib/hadoop-streaming-3.3.6.jar
   mapper: src/hadoop/mapper_baseline.py
   reducer: src/hadoop/reducer_baseline.py
+  advanced_reducer: src/hadoop/reducer_advanced.py
