@@ -61,8 +61,8 @@ cd "${REPO_ROOT}"
 
 # ── STEP 1：数据清洗 MapReduce ─────────────────────────────────────────────────
 if [[ "$SKIP_CLEAN" == "true" ]]; then
-  echo "[INFO] --skip-clean: 使用已有 cleaned 数据 ${HDFS_EXISTING_CLEAN}"
-  HDFS_CLEAN_INPUT="$HDFS_EXISTING_CLEAN"
+  echo "[INFO] --skip-clean: 使用 member3 cleaned 数据 ${HDFS_CLEAN_OUT}"
+  HDFS_CLEAN_INPUT="$HDFS_CLEAN_OUT"
 else
   echo "[INFO] === STEP 1: 数据清洗 MapReduce ==="
   hdfs dfs -rm -r -f "${HDFS_CLEAN_OUT}" || true
