@@ -132,21 +132,39 @@ def has_columns(df: pd.DataFrame, columns: list[str]) -> bool:
     return all(column in df.columns for column in columns)
 
 
-def infer_epoch_unit(values: pd.Series) -> str:
-    """Infer Unix timestamp unit from value magnitude."""
+def parse_epoch_numeric(values: pd.Series) -> pd.Series:
+    """Parse Unix timestamps by normalizing common epoch units to datetime."""
 
-    valid_numeric = pd.to_numeric(values, errors="coerce").dropna()
-    if valid_numeric.empty:
-        return "s"
+    numeric = pd.to_numeric(values, errors="coerce")
+    parsed = pd.Series(pd.NaT, index=values.index, dtype="datetime64[ns]")
+    abs_values = numeric.abs()
+    unit_masks = [
+        ("ns", numeric.notna() & abs_values.ge(1e17)),
+        ("us", numeric.notna() & abs_values.ge(1e14) & abs_values.lt(1e17)),
+        ("ms", numeric.notna() & abs_values.ge(1e11) & abs_values.lt(1e14)),
+        ("s", numeric.notna() & abs_values.lt(1e11)),
+    ]
+    for unit, mask in unit_masks:
+        if mask.any():
+            parsed.loc[mask] = pd.to_datetime(numeric.loc[mask], unit=unit, errors="coerce")
+    return parsed
 
-    median = valid_numeric.abs().median()
-    if median >= 1e17:
-        return "ns"
-    if median >= 1e14:
-        return "us"
-    if median >= 1e11:
-        return "ms"
-    return "s"
+
+def repair_1970_epoch_strings(parsed: pd.Series) -> pd.Series:
+    """Repair strings created by parsing Unix epoch numbers as nanoseconds."""
+
+    if parsed.empty:
+        return parsed
+    repaired = parsed.copy()
+    mask = repaired.notna() & (repaired.dt.year == 1970)
+    if not mask.any():
+        return repaired
+
+    epoch_ns = repaired.loc[mask].astype("int64")
+    repairable = epoch_ns.ge(1_000_000_000)
+    if repairable.any():
+        repaired.loc[epoch_ns.index[repairable]] = parse_epoch_numeric(epoch_ns.loc[repairable])
+    return repaired
 
 
 def parse_timestamp(values: pd.Series) -> pd.Series:
@@ -154,9 +172,7 @@ def parse_timestamp(values: pd.Series) -> pd.Series:
 
     numeric = pd.to_numeric(values, errors="coerce")
     if numeric.notna().mean() >= 0.8:
-        if numeric.dropna().empty:
-            return pd.Series(pd.NaT, index=values.index, dtype="datetime64[ns]")
-        return pd.to_datetime(numeric, unit=infer_epoch_unit(numeric), errors="coerce")
+        return parse_epoch_numeric(numeric)
 
     text = values.astype("string").str.strip()
     parsed = pd.Series(pd.NaT, index=values.index, dtype="datetime64[ns]")
@@ -181,7 +197,7 @@ def parse_timestamp(values: pd.Series) -> pd.Series:
         numeric_text = pd.to_numeric(text.loc[mask], errors="coerce")
         valid_numeric = numeric_text.dropna()
         if not valid_numeric.empty:
-            candidate = pd.to_datetime(numeric_text, unit=infer_epoch_unit(valid_numeric), errors="coerce")
+            candidate = parse_epoch_numeric(numeric_text)
             valid = candidate.notna()
             parsed.loc[candidate.index[valid]] = candidate.loc[valid]
 
@@ -193,7 +209,7 @@ def parse_timestamp(values: pd.Series) -> pd.Series:
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message="Could not infer format", category=UserWarning)
                 parsed.loc[mask] = pd.to_datetime(text.loc[mask], errors="coerce")
-    return parsed
+    return repair_1970_epoch_strings(parsed)
 
 
 def normalize_method_name(method: object) -> str:
@@ -694,8 +710,9 @@ def render_series_browser(metrics: pd.DataFrame) -> None:
     selected_series = st.selectbox("选择时间序列", series_options, key="series_browser_select")
     selected = metrics.loc[metrics["series_label"] == selected_series].sort_values("timestamp")
 
-    fig = px.line(selected, x="timestamp", y="value", title=f"原始时间序列：{selected_series}")
-    fig.update_layout(xaxis_title="时间", yaxis_title="指标值")
+    fig = px.line(selected, x="timestamp", y="value", title=f"原始时间序列：{selected_series}", line_shape="hv")
+    fig.update_traces(line={"shape": "hv"})
+    fig.update_layout(xaxis_title="时间", yaxis_title="指标值", xaxis={"type": "date", "rangeslider": {"visible": False}})
     render_plotly_chart(fig)
 
     st.caption(f"当前序列共有 {len(selected):,} 个点。")
@@ -962,7 +979,7 @@ def build_anomaly_figure(metrics_series: pd.DataFrame, anomaly_rows: pd.DataFram
                 y=metrics_series["value"],
                 mode="lines",
                 name="原始曲线",
-                line={"color": "#1f77b4"},
+                line={"color": "#1f77b4", "shape": "hv"},
             )
         )
 
@@ -1002,7 +1019,7 @@ def build_anomaly_figure(metrics_series: pd.DataFrame, anomaly_rows: pd.DataFram
                     y=threshold_frame[column],
                     mode="lines" if len(threshold_frame) > 1 else "markers",
                     name=name,
-                    line={"dash": "dash", "color": color},
+                    line={"dash": "dash", "color": color, "shape": "hv"},
                     marker={"symbol": "line-ew", "size": 10, "color": color},
                     connectgaps=True,
                 )
@@ -1013,7 +1030,7 @@ def build_anomaly_figure(metrics_series: pd.DataFrame, anomaly_rows: pd.DataFram
         xaxis_title="时间",
         yaxis_title="指标值",
         hovermode="x unified",
-        xaxis={"type": "date", "rangeslider": {"visible": True}},
+        xaxis={"type": "date", "rangeslider": {"visible": False}},
     )
     return fig
 
