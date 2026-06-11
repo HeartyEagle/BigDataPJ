@@ -23,6 +23,13 @@ from src.utils.data_contract import ANOMALY_COLUMNS, PERFORMANCE_COLUMNS  # noqa
 
 
 CHUNK_SIZE = 100_000
+MAX_DIRECT_ANOMALY_FILE_MB = 200
+
+
+ANALYSIS_METHOD_COLUMNS = ["method", "total_points", "anomaly_points", "anomaly_rate"]
+ANALYSIS_KPI_COLUMNS = ["method", "kpi_name", "anomaly_points", "anomaly_rate"]
+ANALYSIS_SERIES_COLUMNS = ["method", "cmdb_id", "kpi_name", "anomaly_points", "anomaly_rate"]
+PERFORMANCE_REQUIRED_COLUMNS = ["method", "server_num", "data_count", "runtime_sec", "throughput"]
 
 
 def has_columns(df: pd.DataFrame, columns: list[str]) -> bool:
@@ -38,16 +45,84 @@ def read_csv_if_exists(path: Path) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def read_first_existing(paths: list[Path]) -> pd.DataFrame:
+    for path in paths:
+        frame = read_csv_if_exists(path)
+        if not frame.empty:
+            return frame
+    return pd.DataFrame()
+
+
+def performance_report_path(root: Path) -> Path | None:
+    candidates = [
+        root / "results" / "performance" / "performance_report.csv",
+        root / "results" / "performance" / "full_comparison_report.csv",
+    ]
+    for path in candidates:
+        if path.exists() and path.is_file():
+            return path
+    return None
+
+
 def anomaly_files(anomalies_dir: Path) -> list[Path]:
     files: list[Path] = []
     if anomalies_dir.exists():
         files.extend(sorted(anomalies_dir.glob("anomaly_*.csv")))
+        files.extend(sorted(anomalies_dir.glob("local_*_full/anomaly_*.csv")))
         files.extend(sorted((anomalies_dir / "hadoop_iqr").glob("part-*")))
-    return files
+    return [path for path in files if path.stat().st_size / 1024 / 1024 <= MAX_DIRECT_ANOMALY_FILE_MB]
+
+
+def load_analysis_package_summary(root: Path) -> pd.DataFrame:
+    summary = read_csv_if_exists(root / "results" / "analysis_package" / "anomaly_method_summary.csv")
+    if summary.empty or not has_columns(summary, ANALYSIS_METHOD_COLUMNS):
+        return pd.DataFrame()
+
+    summary = summary.copy()
+    summary["total_points"] = pd.to_numeric(summary["total_points"], errors="coerce")
+    summary["anomaly_points"] = pd.to_numeric(summary["anomaly_points"], errors="coerce")
+    summary["anomaly_rate"] = pd.to_numeric(summary["anomaly_rate"], errors="coerce")
+
+    series_topn = read_csv_if_exists(root / "results" / "analysis_package" / "anomaly_series_topn.csv")
+    if not series_topn.empty and has_columns(series_topn, ["method", "cmdb_id", "kpi_name"]):
+        series_counts = (
+            series_topn[["method", "cmdb_id", "kpi_name"]]
+            .drop_duplicates()
+            .groupby("method")
+            .size()
+            .reset_index(name="top_anomaly_series")
+        )
+        summary = summary.merge(series_counts, on="method", how="left")
+    return summary
+
+
+def load_local_summary_files(root: Path) -> pd.DataFrame:
+    summary_files = sorted((root / "results" / "anomalies").glob("local_*_full/*_summary.csv"))
+    frames: list[pd.DataFrame] = []
+    for path in summary_files:
+        frame = read_csv_if_exists(path)
+        if frame.empty or not has_columns(frame, ["method", "record_count", "anomaly_count", "anomaly_rate"]):
+            continue
+        frame = frame.copy()
+        frame = frame.rename(columns={"record_count": "total_points", "anomaly_count": "anomaly_points"})
+        frames.append(frame)
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
 
 
 def load_anomaly_summary(anomalies_dir: Path) -> pd.DataFrame:
     """Build an algorithm summary without loading all anomaly files at once."""
+
+    root = anomalies_dir.parents[1]
+    package_summary = load_analysis_package_summary(root)
+    if not package_summary.empty:
+        return package_summary
+
+    local_summary = load_local_summary_files(root)
+    if not local_summary.empty:
+        return local_summary
 
     totals: dict[str, int] = defaultdict(int)
     anomaly_points: dict[str, int] = defaultdict(int)
@@ -173,7 +248,7 @@ def export_profile_figures(root: Path, output_dir: Path, output_format: str) -> 
 def export_anomaly_figures(root: Path, output_dir: Path, output_format: str) -> list[Path]:
     summary = load_anomaly_summary(root / "results" / "anomalies")
     if summary.empty:
-        return []
+        return export_analysis_package_detail_figures(root, output_dir, output_format)
 
     exported: list[Path] = []
     fig = px.bar(summary, x="method", y="anomaly_points", title="Anomaly Points by Algorithm")
@@ -182,25 +257,89 @@ def export_anomaly_figures(root: Path, output_dir: Path, output_format: str) -> 
     if path:
         exported.append(path)
 
-    fig = px.bar(summary, x="method", y="anomaly_series", title="Anomaly Series by Algorithm")
-    fig.update_layout(xaxis_title="Algorithm", yaxis_title="Anomaly Series")
-    path = save_figure(fig, output_dir, "algorithm_anomaly_series", output_format)
+    rate_plot = summary.copy()
+    rate_plot["anomaly_rate_percent"] = pd.to_numeric(rate_plot["anomaly_rate"], errors="coerce") * 100
+    fig = px.bar(rate_plot, x="method", y="anomaly_rate_percent", title="Anomaly Rate by Algorithm")
+    fig.update_layout(xaxis_title="Algorithm", yaxis_title="Anomaly Rate (%)")
+    path = save_figure(fig, output_dir, "algorithm_anomaly_rate", output_format)
     if path:
         exported.append(path)
+
+    series_column = "anomaly_series" if "anomaly_series" in summary.columns else "top_anomaly_series"
+    if series_column in summary.columns:
+        title = "Anomaly Series by Algorithm" if series_column == "anomaly_series" else "Top-N Anomaly Series by Algorithm"
+        fig = px.bar(summary, x="method", y=series_column, title=title)
+        fig.update_layout(xaxis_title="Algorithm", yaxis_title="Series Count")
+        path = save_figure(fig, output_dir, "algorithm_anomaly_series", output_format)
+        if path:
+            exported.append(path)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / "algorithm_anomaly_summary.csv"
     summary.to_csv(summary_path, index=False)
     exported.append(summary_path)
+    exported.extend(export_analysis_package_detail_figures(root, output_dir, output_format))
+    return exported
+
+
+def export_analysis_package_detail_figures(root: Path, output_dir: Path, output_format: str) -> list[Path]:
+    package = root / "results" / "analysis_package"
+    exported: list[Path] = []
+
+    kpi = read_csv_if_exists(package / "anomaly_kpi_topn.csv")
+    if not kpi.empty and has_columns(kpi, ANALYSIS_KPI_COLUMNS):
+        plot = kpi.sort_values("anomaly_points", ascending=False).head(20).copy()
+        plot["label"] = plot["method"].astype(str) + " | " + plot["kpi_name"].astype(str)
+        fig = px.bar(
+            plot.sort_values("anomaly_points"),
+            x="anomaly_points",
+            y="label",
+            orientation="h",
+            title="Top 20 Anomaly KPI",
+        )
+        fig.update_layout(xaxis_title="Anomaly Points", yaxis_title="Method | KPI")
+        path = save_figure(fig, output_dir, "anomaly_kpi_top20", output_format)
+        if path:
+            exported.append(path)
+
+    series = read_csv_if_exists(package / "anomaly_series_topn.csv")
+    if not series.empty and has_columns(series, ANALYSIS_SERIES_COLUMNS):
+        plot = series.sort_values("anomaly_points", ascending=False).head(20).copy()
+        plot["label"] = (
+            plot["method"].astype(str)
+            + " | "
+            + plot["cmdb_id"].astype(str)
+            + " | "
+            + plot["kpi_name"].astype(str)
+        )
+        fig = px.bar(
+            plot.sort_values("anomaly_points"),
+            x="anomaly_points",
+            y="label",
+            orientation="h",
+            title="Top 20 Anomaly Series",
+        )
+        fig.update_layout(xaxis_title="Anomaly Points", yaxis_title="Method | Series")
+        path = save_figure(fig, output_dir, "anomaly_series_top20", output_format)
+        if path:
+            exported.append(path)
+
     return exported
 
 
 def export_performance_figures(root: Path, output_dir: Path, output_format: str) -> list[Path]:
-    performance = read_csv_if_exists(root / "results" / "performance" / "performance_report.csv")
-    if performance.empty or not has_columns(performance, PERFORMANCE_COLUMNS):
+    report_path = performance_report_path(root)
+    if report_path is None:
         return []
 
-    performance = performance.loc[:, PERFORMANCE_COLUMNS].copy()
+    performance = read_csv_if_exists(report_path)
+    if performance.empty or not has_columns(performance, PERFORMANCE_REQUIRED_COLUMNS):
+        return []
+
+    performance = performance.copy()
+    if "series_count" not in performance.columns:
+        performance["series_count"] = np.nan
+    performance = performance.loc[:, [column for column in PERFORMANCE_COLUMNS if column in performance.columns]].copy()
     performance["runtime_sec"] = pd.to_numeric(performance["runtime_sec"], errors="coerce")
     performance["throughput"] = pd.to_numeric(performance["throughput"], errors="coerce")
     performance["server_num"] = performance["server_num"].astype(str)

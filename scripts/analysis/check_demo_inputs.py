@@ -38,6 +38,10 @@ OVERVIEW_KEYS = [
     "sampling_interval_sec",
 ]
 DEMO_CASE_COLUMNS = ["cmdb_id", "kpi_name"]
+ANALYSIS_METHOD_COLUMNS = ["method", "total_points", "anomaly_points", "anomaly_rate"]
+ANALYSIS_SAMPLE_COLUMNS = ANOMALY_COLUMNS
+BASELINE_SUMMARY_COLUMNS = ["method", "series_count", "record_count", "anomaly_count", "anomaly_rate"]
+FULL_PERFORMANCE_COLUMNS = ["method", "mode", "server_num", "data_count", "anomaly_count", "runtime_sec", "throughput"]
 ANOMALY_EVENT_COLUMNS = [
     "event_id",
     "cmdb_id",
@@ -87,6 +91,21 @@ def check_csv(path: Path, columns: list[str], label: str, required: bool, root: 
         return CheckResult(status, label, relative, f"missing columns: {missing}")
 
     return CheckResult("OK", label, relative, "columns ok")
+
+
+def check_any_csv(candidates: list[Path], columns: list[str], label: str, required: bool, root: Path) -> CheckResult:
+    errors: list[str] = []
+    for path in candidates:
+        result = check_csv(path, columns, label, False, root)
+        if result.status == "OK":
+            return CheckResult("OK", label, result.path, result.detail)
+        errors.append(f"{result.path}: {result.detail}")
+
+    status = "FAIL" if required else "WARN"
+    detail = "no usable file; " + "; ".join(errors[:4])
+    if len(errors) > 4:
+        detail += f"; ... {len(errors) - 4} more"
+    return CheckResult(status, label, " | ".join(display_path(path, root) for path in candidates), detail)
 
 
 def check_json(path: Path, keys: list[str], label: str, required: bool, root: Path) -> CheckResult:
@@ -141,6 +160,57 @@ def check_hadoop_parts(directory: Path, required: bool, root: Path) -> CheckResu
     return CheckResult("OK", "Hadoop part files", relative, f"{len(part_files)} part files")
 
 
+def check_anomaly_source(anomalies: Path, root: Path) -> CheckResult:
+    candidates = [
+        root / "results" / "analysis_package" / "anomaly_sample.csv",
+        anomalies / "anomaly_iqr.csv",
+        anomalies / "anomaly_ksigma.csv",
+        anomalies / "anomaly_range.csv",
+        anomalies / "anomaly_advanced.csv",
+        anomalies / "local_iqr_full" / "anomaly_iqr.csv",
+        anomalies / "local_ksigma_full" / "anomaly_ksigma.csv",
+        anomalies / "local_range_full" / "anomaly_range.csv",
+        anomalies / "local_advanced_full" / "anomaly_advanced.csv",
+    ]
+    return check_any_csv(candidates, ANALYSIS_SAMPLE_COLUMNS, "Demo anomaly source", True, root)
+
+
+def check_algorithm_summary(anomalies: Path, root: Path) -> CheckResult:
+    package_summary = root / "results" / "analysis_package" / "anomaly_method_summary.csv"
+    package_result = check_csv(package_summary, ANALYSIS_METHOD_COLUMNS, "Algorithm summary", False, root)
+    if package_result.status == "OK":
+        return CheckResult("OK", "Algorithm summary", package_result.path, "analysis package summary ok")
+
+    candidates = [
+        anomalies / "local_iqr_full" / "baseline_summary.csv",
+        anomalies / "local_ksigma_full" / "baseline_summary.csv",
+        anomalies / "local_range_full" / "baseline_summary.csv",
+        anomalies / "local_advanced_full" / "advanced_summary.csv",
+        anomalies / "baseline_summary.csv",
+        anomalies / "advanced_summary.csv",
+    ]
+    return check_any_csv(candidates, BASELINE_SUMMARY_COLUMNS, "Algorithm summary", True, root)
+
+
+def check_performance_report(performance: Path, root: Path) -> CheckResult:
+    standard = performance / "performance_report.csv"
+    standard_result = check_csv(standard, PERFORMANCE_COLUMNS, "Performance report", False, root)
+    if standard_result.status == "OK":
+        return CheckResult("OK", "Performance report", standard_result.path, "standard performance report ok")
+
+    full = performance / "full_comparison_report.csv"
+    full_result = check_csv(full, FULL_PERFORMANCE_COLUMNS, "Performance report", False, root)
+    if full_result.status == "OK":
+        return CheckResult("OK", "Performance report", full_result.path, "full comparison report ok")
+
+    return CheckResult(
+        "FAIL",
+        "Performance report",
+        f"{display_path(standard, root)} | {display_path(full, root)}",
+        f"no usable file; {standard_result.detail}; {full_result.detail}",
+    )
+
+
 def build_checks(root: Path, include_optional_as_required: bool) -> list[CheckResult]:
     profiles = root / "results" / "profiles"
     anomalies = root / "results" / "anomalies"
@@ -155,14 +225,26 @@ def build_checks(root: Path, include_optional_as_required: bool) -> list[CheckRe
         check_csv(profiles / "kpi_distribution.csv", KPI_DISTRIBUTION_COLUMNS, "KPI distribution", True, root),
         check_csv(profiles / "series_profile.csv", SERIES_PROFILE_COLUMNS, "Series profile", True, root),
         check_csv(profiles / "missing_topn.csv", MISSING_TOPN_COLUMNS, "Missing Top-N", True, root),
-        check_csv(anomalies / "anomaly_iqr.csv", ANOMALY_COLUMNS, "IQR anomalies", True, root),
-        check_csv(anomalies / "anomaly_ksigma.csv", ANOMALY_COLUMNS, "K-Sigma anomalies", True, root),
-        check_csv(anomalies / "anomaly_range.csv", ANOMALY_COLUMNS, "Range anomalies", True, root),
+        check_anomaly_source(anomalies, root),
+        check_algorithm_summary(anomalies, root),
+        check_performance_report(performance, root),
         check_hadoop_parts(anomalies / "hadoop_iqr", optional_required, root),
-        check_csv(performance / "performance_report.csv", PERFORMANCE_COLUMNS, "Performance report", optional_required, root),
         check_csv(advanced_base / "anomaly_advanced.csv", ANOMALY_COLUMNS, "Advanced anomalies", optional_required, root),
         check_csv(advanced_base / "advanced_summary.csv", ["method", "series_count", "record_count", "anomaly_count", "anomaly_rate"], "Advanced summary", optional_required, root),
-        check_csv(anomalies / "demo_cases.csv", DEMO_CASE_COLUMNS, "Demo cases", optional_required, root),
+        check_any_csv(
+            [
+                anomalies / "demo_cases.csv",
+                anomalies / "local_iqr_full" / "demo_cases.csv",
+                anomalies / "local_ksigma_full" / "demo_cases.csv",
+                anomalies / "local_range_full" / "demo_cases.csv",
+                anomalies / "local_advanced_full" / "demo_cases.csv",
+                root / "results" / "analysis_package" / "context" / "demo_cases.csv",
+            ],
+            DEMO_CASE_COLUMNS,
+            "Demo cases",
+            optional_required,
+            root,
+        ),
         check_csv(advanced_base / "demo_cases.csv", DEMO_CASE_COLUMNS, "Advanced demo cases", optional_required, root),
     ]
     return checks
