@@ -8,6 +8,7 @@ review, PPT preparation, and Streamlit demo debugging.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import shutil
 import sys
@@ -24,6 +25,19 @@ from src.utils.data_contract import ANOMALY_COLUMNS  # noqa: E402
 
 DEFAULT_CHUNK_SIZE = 200_000
 SUMMARY_SMALL_FILE_LIMIT_MB = 100
+EXPECTED_ANOMALY_FIELD_COUNT = len(ANOMALY_COLUMNS)
+RANGE_METHOD_TOKEN = "range"
+POTENTIALLY_UNIT_SENSITIVE_TOKENS = [
+    "usage",
+    "memory",
+    "bytes",
+    "byte",
+    "_mb",
+    ".mb",
+    "gc",
+    "heap",
+    "space",
+]
 
 
 def resolve_path(root: Path, value: str) -> Path:
@@ -41,9 +55,58 @@ def has_columns(path: Path, columns: list[str]) -> bool:
     return all(column in header.columns for column in columns)
 
 
-def find_anomaly_files(root: Path, explicit_files: list[str]) -> list[Path]:
-    if explicit_files:
-        return [resolve_path(root, item) for item in explicit_files]
+def looks_like_headerless_anomaly_file(path: Path) -> bool:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+            reader = csv.reader(handle)
+            for row in reader:
+                if not row:
+                    continue
+                return len(row) == EXPECTED_ANOMALY_FIELD_COUNT and row != ANOMALY_COLUMNS
+    except OSError:
+        return False
+    return False
+
+
+def detect_anomaly_layout(path: Path) -> str | None:
+    """Return 'header' or 'headerless' for supported anomaly result files."""
+    if has_columns(path, ANOMALY_COLUMNS):
+        return "header"
+    if looks_like_headerless_anomaly_file(path):
+        return "headerless"
+    return None
+
+
+def expand_anomaly_path(root: Path, value: str) -> list[Path]:
+    path = resolve_path(root, value)
+    if path.is_dir():
+        part_files = sorted(path.glob("part-*"))
+        if part_files:
+            return part_files
+        return sorted(path.glob("*.csv"))
+    return [path]
+
+
+def unique_paths(paths: list[Path]) -> list[Path]:
+    seen: set[Path] = set()
+    output: list[Path] = []
+    for path in paths:
+        resolved = path.resolve() if path.exists() else path
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        output.append(path)
+    return output
+
+
+def find_anomaly_files(root: Path, explicit_files: list[str], explicit_dirs: list[str]) -> list[Path]:
+    if explicit_files or explicit_dirs:
+        files: list[Path] = []
+        for item in explicit_dirs:
+            files.extend(expand_anomaly_path(root, item))
+        for item in explicit_files:
+            files.extend(expand_anomaly_path(root, item))
+        return unique_paths(files)
 
     candidates = [
         root / "results" / "anomalies" / "local_advanced_full" / "anomaly_advanced.csv",
@@ -55,10 +118,24 @@ def find_anomaly_files(root: Path, explicit_files: list[str]) -> list[Path]:
         root / "results" / "anomalies" / "anomaly_ksigma.csv",
         root / "results" / "anomalies" / "anomaly_range.csv",
     ]
-    hadoop_dir = root / "results" / "anomalies" / "hadoop_iqr"
-    if hadoop_dir.exists():
-        candidates.extend(sorted(hadoop_dir.glob("part-*")))
-    return [path for path in candidates if path.exists() and path.is_file()]
+    hadoop_parent = root / "results" / "anomalies"
+    if hadoop_parent.exists():
+        for hadoop_dir in sorted(hadoop_parent.glob("hadoop*")):
+            if hadoop_dir.is_dir():
+                candidates.extend(sorted(hadoop_dir.glob("part-*")))
+    return unique_paths([path for path in candidates if path.exists() and path.is_file()])
+
+
+def read_anomaly_chunks(path: Path, layout: str, chunk_size: int):
+    common_kwargs = {
+        "chunksize": chunk_size,
+        "on_bad_lines": "skip",
+    }
+    if layout == "header":
+        return pd.read_csv(path, usecols=ANOMALY_COLUMNS, **common_kwargs)
+    if layout == "headerless":
+        return pd.read_csv(path, header=None, names=ANOMALY_COLUMNS, **common_kwargs)
+    raise ValueError(f"Unsupported anomaly file layout: {layout}")
 
 
 def safe_numeric(series: pd.Series) -> pd.Series:
@@ -99,8 +176,8 @@ def append_group_summary(container: list[pd.DataFrame], chunk: pd.DataFrame, key
         .agg(
             total_points=("is_anomaly", "size"),
             anomaly_points=("is_anomaly", "sum"),
+            score_sum=("score", "sum"),
             max_score=("score", "max"),
-            mean_score=("score", "mean"),
             min_value=("value", "min"),
             max_value=("value", "max"),
         )
@@ -118,8 +195,55 @@ def merge_summaries(parts: list[pd.DataFrame], keys: list[str]) -> pd.DataFrame:
         .agg(
             total_points=("total_points", "sum"),
             anomaly_points=("anomaly_points", "sum"),
+            score_sum=("score_sum", "sum"),
             max_score=("max_score", "max"),
-            mean_score=("mean_score", "mean"),
+            min_value=("min_value", "min"),
+            max_value=("max_value", "max"),
+        )
+        .reset_index()
+    )
+    summary["mean_score"] = summary["score_sum"] / summary["total_points"]
+    summary["anomaly_rate"] = summary["anomaly_points"] / summary["total_points"]
+    output_columns = keys + [
+        "total_points",
+        "anomaly_points",
+        "anomaly_rate",
+        "max_score",
+        "mean_score",
+        "min_value",
+        "max_value",
+    ]
+    return summary.loc[:, output_columns].sort_values(["anomaly_points", "max_score"], ascending=False)
+
+
+def append_range_threshold_summary(container: list[pd.DataFrame], chunk: pd.DataFrame) -> None:
+    range_chunk = chunk[chunk["method"].str.lower().str.contains(RANGE_METHOD_TOKEN, na=False)]
+    if range_chunk.empty:
+        return
+    grouped = (
+        range_chunk.groupby(["method", "kpi_name", "threshold_low", "threshold_high"], dropna=False)
+        .agg(
+            total_points=("is_anomaly", "size"),
+            anomaly_points=("is_anomaly", "sum"),
+            max_score=("score", "max"),
+            min_value=("value", "min"),
+            max_value=("value", "max"),
+        )
+        .reset_index()
+    )
+    container.append(grouped)
+
+
+def merge_range_threshold_summaries(parts: list[pd.DataFrame]) -> pd.DataFrame:
+    if not parts:
+        return pd.DataFrame()
+    data = pd.concat(parts, ignore_index=True)
+    summary = (
+        data.groupby(["method", "kpi_name", "threshold_low", "threshold_high"], dropna=False)
+        .agg(
+            total_points=("total_points", "sum"),
+            anomaly_points=("anomaly_points", "sum"),
+            max_score=("max_score", "max"),
             min_value=("min_value", "min"),
             max_value=("max_value", "max"),
         )
@@ -127,6 +251,38 @@ def merge_summaries(parts: list[pd.DataFrame], keys: list[str]) -> pd.DataFrame:
     )
     summary["anomaly_rate"] = summary["anomaly_points"] / summary["total_points"]
     return summary.sort_values(["anomaly_points", "max_score"], ascending=False)
+
+
+def write_range_diagnostics(range_summary: pd.DataFrame, output_dir: Path) -> list[str]:
+    if range_summary.empty:
+        return []
+
+    outputs: list[str] = []
+    range_summary.to_csv(output_dir / "range_threshold_diagnostics.csv", index=False)
+    outputs.append("range_threshold_diagnostics.csv")
+
+    high = pd.to_numeric(range_summary["threshold_high"], errors="coerce")
+    max_value = pd.to_numeric(range_summary["max_value"], errors="coerce")
+    capped_100 = range_summary[high.le(100)]
+    if not capped_100.empty:
+        capped_100.to_csv(output_dir / "range_upper_100_kpis.csv", index=False)
+        outputs.append("range_upper_100_kpis.csv")
+
+    suspicious = range_summary[high.le(100) & max_value.gt(100)]
+    if not suspicious.empty:
+        suspicious.to_csv(output_dir / "range_suspicious_thresholds.csv", index=False)
+        outputs.append("range_suspicious_thresholds.csv")
+
+    lower_name = range_summary["kpi_name"].astype(str).str.lower()
+    unit_sensitive = lower_name.apply(
+        lambda value: any(token in value for token in POTENTIALLY_UNIT_SENSITIVE_TOKENS)
+    )
+    usage_threshold_check = range_summary[unit_sensitive & high.le(100)]
+    if not usage_threshold_check.empty:
+        usage_threshold_check.to_csv(output_dir / "range_usage_threshold_check.csv", index=False)
+        outputs.append("range_usage_threshold_check.csv")
+
+    return outputs
 
 
 def topn_per_method(summary: pd.DataFrame, topn: int) -> pd.DataFrame:
@@ -177,29 +333,43 @@ def summarize_files(
     method_parts: list[pd.DataFrame] = []
     kpi_parts: list[pd.DataFrame] = []
     series_parts: list[pd.DataFrame] = []
+    range_threshold_parts: list[pd.DataFrame] = []
     hourly_parts: list[pd.DataFrame] = []
     samples: list[pd.DataFrame] = []
     manifest: list[dict[str, object]] = []
+
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     for path in files:
         if not path.exists() or not path.is_file():
             manifest.append({"path": path.as_posix(), "status": "missing", "size_mb": None})
             continue
-        if not has_columns(path, ANOMALY_COLUMNS):
-            manifest.append({"path": path.as_posix(), "status": "bad_columns", "size_mb": path.stat().st_size / 1024 / 1024})
+        layout = detect_anomaly_layout(path)
+        if layout is None:
+            manifest.append(
+                {
+                    "path": path.as_posix(),
+                    "status": "bad_columns",
+                    "layout": None,
+                    "size_mb": round(path.stat().st_size / 1024 / 1024, 3),
+                }
+            )
             continue
 
         rows_seen = 0
+        anomaly_rows_seen = 0
         sample_parts: list[pd.DataFrame] = []
-        for chunk in pd.read_csv(path, usecols=ANOMALY_COLUMNS, chunksize=chunk_size):
+        for chunk in read_anomaly_chunks(path, layout, chunk_size):
             chunk = normalize_chunk(chunk)
             if chunk.empty:
                 continue
             rows_seen += len(chunk)
+            anomaly_rows_seen += int(chunk["is_anomaly"].sum())
 
             append_group_summary(method_parts, chunk, ["method"])
             append_group_summary(kpi_parts, chunk, ["method", "kpi_name"])
             append_group_summary(series_parts, chunk, ["method", "cmdb_id", "kpi_name"])
+            append_range_threshold_summary(range_threshold_parts, chunk)
 
             parsed_time = parse_timestamp(chunk["timestamp"])
             hourly = chunk.assign(hour=parsed_time.dt.floor("h")).dropna(subset=["hour"])
@@ -227,17 +397,19 @@ def summarize_files(
             {
                 "path": path.as_posix(),
                 "status": "ok",
+                "layout": layout,
                 "size_mb": round(path.stat().st_size / 1024 / 1024, 3),
                 "rows_seen": rows_seen,
+                "anomaly_rows_seen": anomaly_rows_seen,
             }
         )
 
-    output_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(manifest).to_csv(output_dir / "file_manifest.csv", index=False)
 
     method_summary = merge_summaries(method_parts, ["method"])
     kpi_summary = merge_summaries(kpi_parts, ["method", "kpi_name"])
     series_summary = merge_summaries(series_parts, ["method", "cmdb_id", "kpi_name"])
+    range_threshold_summary = merge_range_threshold_summaries(range_threshold_parts)
 
     if not method_summary.empty and not series_summary.empty:
         anomaly_series = (
@@ -268,12 +440,169 @@ def summarize_files(
         sample = pd.concat(samples, ignore_index=True).head(sample_per_file * max(1, len(files)))
         sample.to_csv(output_dir / "anomaly_sample.csv", index=False)
 
+    range_outputs = write_range_diagnostics(range_threshold_summary, output_dir)
+    write_markdown_report(output_dir, method_summary, kpi_summary, series_summary, range_threshold_summary)
+
     return {
         "input_files": len(files),
         "ok_files": sum(1 for item in manifest if item["status"] == "ok"),
         "total_rows_seen": int(sum(int(item.get("rows_seen", 0) or 0) for item in manifest)),
+        "total_anomaly_rows_seen": int(sum(int(item.get("anomaly_rows_seen", 0) or 0) for item in manifest)),
+        "range_diagnostic_outputs": range_outputs,
         "outputs": sorted(path.name for path in output_dir.glob("*") if path.is_file()),
     }
+
+
+def format_int(value: object) -> str:
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def format_pct(value: object) -> str:
+    try:
+        return f"{float(value) * 100:.4f}%"
+    except (TypeError, ValueError):
+        return ""
+
+
+def markdown_table(data: pd.DataFrame, columns: list[str], rename: dict[str, str] | None = None) -> list[str]:
+    if data.empty:
+        return ["无可用数据。"]
+    rename = rename or {}
+    lines = []
+    headers = [rename.get(column, column) for column in columns]
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("| " + " | ".join("---" for _ in columns) + " |")
+    for _, row in data.loc[:, columns].iterrows():
+        values: list[str] = []
+        for column in columns:
+            value = row[column]
+            if column in {"total_points", "anomaly_points", "anomaly_series"}:
+                values.append(format_int(value))
+            elif column == "anomaly_rate":
+                values.append(format_pct(value))
+            elif column in {"max_score", "mean_score", "min_value", "max_value", "threshold_low", "threshold_high"}:
+                try:
+                    values.append(f"{float(value):.6g}")
+                except (TypeError, ValueError):
+                    values.append(str(value))
+            else:
+                values.append(str(value))
+        lines.append("| " + " | ".join(values) + " |")
+    return lines
+
+
+def write_markdown_report(
+    output_dir: Path,
+    method_summary: pd.DataFrame,
+    kpi_summary: pd.DataFrame,
+    series_summary: pd.DataFrame,
+    range_threshold_summary: pd.DataFrame,
+) -> None:
+    lines: list[str] = [
+        "# Range 修复结果分析摘要",
+        "",
+        "本报告由 `scripts/analysis/summarize_cloud_results.py` 在云端流式扫描大文件生成，适合传回本地用于 PPT 和 Demo 素材更新。",
+        "",
+        "## 1. 总体异常结果",
+        "",
+    ]
+    method_columns = [
+        column
+        for column in ["method", "total_points", "anomaly_points", "anomaly_rate", "anomaly_series", "max_score"]
+        if column in method_summary.columns
+    ]
+    lines.extend(
+        markdown_table(
+            method_summary,
+            method_columns,
+            {
+                "method": "算法",
+                "total_points": "总点数",
+                "anomaly_points": "异常点数",
+                "anomaly_rate": "异常率",
+                "anomaly_series": "有异常序列数",
+                "max_score": "最大分数",
+            },
+        )
+    )
+
+    lines.extend(["", "## 2. Range 修复检查", ""])
+    if range_threshold_summary.empty:
+        lines.append("没有发现 method 包含 `range` 的记录；如果本次只分析 Range 文件，请检查输入文件路径或 method 字段。")
+    else:
+        high = pd.to_numeric(range_threshold_summary["threshold_high"], errors="coerce")
+        max_value = pd.to_numeric(range_threshold_summary["max_value"], errors="coerce")
+        capped_100 = range_threshold_summary[high.le(100)]
+        suspicious = range_threshold_summary[high.le(100) & max_value.gt(100)]
+        lines.append(f"- Range 相关 KPI/阈值组合数：{len(range_threshold_summary):,}")
+        lines.append(f"- 上界仍为 100 或更低的组合数：{len(capped_100):,}")
+        lines.append(f"- 上界为 100 或更低、但实际最大值超过 100 的疑似单位误判组合数：{len(suspicious):,}")
+        if suspicious.empty:
+            lines.append("- 结论：从阈值分布看，之前 `usage` 类指标被误判为百分比上限 100 的问题没有明显残留。")
+        else:
+            lines.append("- 结论：仍存在疑似单位误判，请优先查看 `range_suspicious_thresholds.csv`。")
+
+    lines.extend(["", "## 3. 异常最多的 KPI Top 20", ""])
+    kpi_top = topn_per_method(kpi_summary, 20)
+    kpi_columns = [
+        column
+        for column in ["method", "kpi_name", "total_points", "anomaly_points", "anomaly_rate", "max_score"]
+        if column in kpi_top.columns
+    ]
+    lines.extend(
+        markdown_table(
+            kpi_top.head(20),
+            kpi_columns,
+            {
+                "method": "算法",
+                "kpi_name": "KPI",
+                "total_points": "总点数",
+                "anomaly_points": "异常点数",
+                "anomaly_rate": "异常率",
+                "max_score": "最大分数",
+            },
+        )
+    )
+
+    lines.extend(["", "## 4. 异常最多的序列 Top 20", ""])
+    series_top = topn_per_method(series_summary, 20)
+    series_columns = [
+        column
+        for column in ["method", "cmdb_id", "kpi_name", "total_points", "anomaly_points", "anomaly_rate", "max_score"]
+        if column in series_top.columns
+    ]
+    lines.extend(
+        markdown_table(
+            series_top.head(20),
+            series_columns,
+            {
+                "method": "算法",
+                "cmdb_id": "对象",
+                "kpi_name": "KPI",
+                "total_points": "总点数",
+                "anomaly_points": "异常点数",
+                "anomaly_rate": "异常率",
+                "max_score": "最大分数",
+            },
+        )
+    )
+
+    lines.extend(
+        [
+            "",
+            "## 5. PPT 使用建议",
+            "",
+            "- 如果 Range 的异常点数明显低于旧结果 `1,153,040`，建议更新总结果页和算法差异页中的 Range 数字。",
+            "- 如果 `range_suspicious_thresholds.csv` 为空，可以在答辩中说明 Range 已修正为只对明确百分比指标使用 0-100 上界。",
+            "- 如果 Top 序列不再被 JVM memoryUsage 类指标刷屏，可以重新使用 Range 的 Top KPI/Top 序列作为结果展示素材。",
+            "- `anomaly_sample.csv` 可作为 Demo 快速加载样本，不需要把 600MB 级 part 文件拉回本地。",
+            "",
+        ]
+    )
+    (output_dir / "range_fix_report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 def main() -> None:
@@ -283,7 +612,16 @@ def main() -> None:
         "--anomaly-file",
         action="append",
         default=[],
-        help="Anomaly CSV or Hadoop part file to summarize. Can be provided multiple times.",
+        help=(
+            "Anomaly CSV, Hadoop part file, or directory to summarize. "
+            "Can be provided multiple times. Directories are expanded to part-* files."
+        ),
+    )
+    parser.add_argument(
+        "--anomaly-dir",
+        action="append",
+        default=[],
+        help="Directory containing Hadoop part-* files. Can be provided multiple times.",
     )
     parser.add_argument("--output-dir", default="results/analysis_package", help="Output directory.")
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE, help="CSV rows per chunk.")
@@ -293,10 +631,10 @@ def main() -> None:
 
     root = Path(args.root).resolve()
     output_dir = resolve_path(root, args.output_dir)
-    files = find_anomaly_files(root, args.anomaly_file)
+    files = find_anomaly_files(root, args.anomaly_file, args.anomaly_dir)
 
     if not files:
-        print("No anomaly result files found. Pass --anomaly-file with the exact CSV path.")
+        print("No anomaly result files found. Pass --anomaly-dir or --anomaly-file with the exact path.")
         raise SystemExit(1)
 
     copied = copy_small_context_files(root, output_dir)
