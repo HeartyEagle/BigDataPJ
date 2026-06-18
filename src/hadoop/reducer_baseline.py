@@ -106,8 +106,6 @@ def emit_ksigma_series(key: str, raw_points: list[tuple[str, str]], k: float) ->
 def range_thresholds(kpi_name: str, values: list[float]) -> tuple[float, float]:
     lower_name = kpi_name.lower()
     value_min = min(values) if values else 0.0
-    # Only explicit percentage indicators should be capped at 100.
-    # Names such as memoryUsage or fs_usage_MB are capacity metrics, not percentages.
     if any(token in lower_name for token in ["pct", "percent", "percentage"]):
         return 0.0, 100.0
     if any(token in lower_name for token in ["rate", "ratio", "sr", "rr", "success", "failure", "error"]):

@@ -82,11 +82,9 @@ def load_analysis_package_summary(root: Path) -> pd.DataFrame:
     summary["total_points"] = pd.to_numeric(summary["total_points"], errors="coerce")
     summary["anomaly_points"] = pd.to_numeric(summary["anomaly_points"], errors="coerce")
     summary["anomaly_rate"] = pd.to_numeric(summary["anomaly_rate"], errors="coerce")
-    if "anomaly_series" in summary.columns:
-        summary["anomaly_series"] = pd.to_numeric(summary["anomaly_series"], errors="coerce")
 
     series_topn = read_csv_if_exists(root / "results" / "analysis_package" / "anomaly_series_topn.csv")
-    if "anomaly_series" not in summary.columns and not series_topn.empty and has_columns(series_topn, ["method", "cmdb_id", "kpi_name"]):
+    if not series_topn.empty and has_columns(series_topn, ["method", "cmdb_id", "kpi_name"]):
         series_counts = (
             series_topn[["method", "cmdb_id", "kpi_name"]]
             .drop_duplicates()
@@ -96,26 +94,6 @@ def load_analysis_package_summary(root: Path) -> pd.DataFrame:
         )
         summary = summary.merge(series_counts, on="method", how="left")
     return summary
-
-
-def balanced_topn_by_method(df: pd.DataFrame, value: str, total: int = 20) -> pd.DataFrame:
-    if df.empty or "method" not in df.columns:
-        return df.sort_values(value, ascending=False).head(total)
-    plot = df.copy()
-    plot[value] = pd.to_numeric(plot[value], errors="coerce")
-    plot = plot.dropna(subset=[value])
-    plot = plot.loc[plot[value] > 0]
-    if plot.empty:
-        return plot
-    method_count = max(1, plot["method"].nunique())
-    per_method = max(1, total // method_count)
-    balanced = (
-        plot.sort_values(["method", value], ascending=[True, False])
-        .groupby("method", group_keys=False)
-        .head(per_method)
-        .sort_values(value, ascending=False)
-    )
-    return balanced.head(total)
 
 
 def load_local_summary_files(root: Path) -> pd.DataFrame:
@@ -326,7 +304,7 @@ def export_analysis_package_detail_figures(root: Path, output_dir: Path, output_
 
     series = read_csv_if_exists(package / "anomaly_series_topn.csv")
     if not series.empty and has_columns(series, ANALYSIS_SERIES_COLUMNS):
-        plot = balanced_topn_by_method(series, "anomaly_points", total=20).copy()
+        plot = series.sort_values("anomaly_points", ascending=False).head(20).copy()
         plot["label"] = (
             plot["method"].astype(str)
             + " | "
@@ -339,7 +317,7 @@ def export_analysis_package_detail_figures(root: Path, output_dir: Path, output_
             x="anomaly_points",
             y="label",
             orientation="h",
-            title="Top Anomaly Series by Algorithm",
+            title="Top 20 Anomaly Series",
         )
         fig.update_layout(xaxis_title="Anomaly Points", yaxis_title="Method | Series")
         path = save_figure(fig, output_dir, "anomaly_series_top20", output_format)
